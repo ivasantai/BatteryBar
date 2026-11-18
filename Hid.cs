@@ -65,6 +65,15 @@ internal static class Hid
     public static SafeFileHandle OpenNoAccess(string path) =>
         CreateFileW(path, 0, FILE_SHARE_READ | FILE_SHARE_WRITE, IntPtr.Zero, OPEN_EXISTING, 0, IntPtr.Zero);
 
+    /// <summary>Выходной репорт через control-канал (HidD_SetOutputReport) — нужен устройствам,
+    /// которые не слушают interrupt OUT.</summary>
+    public static bool SetOutputReport(string path, byte[] buf)
+    {
+        using var h = CreateFileW(path, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
+            IntPtr.Zero, OPEN_EXISTING, 0, IntPtr.Zero);
+        return !h.IsInvalid && HidD_SetOutputReport(h, buf, buf.Length);
+    }
+
     public static bool SetFeature(SafeFileHandle h, byte[] buf) => HidD_SetFeature(h, buf, buf.Length);
     public static bool GetFeature(SafeFileHandle h, byte[] buf) => HidD_GetFeature(h, buf, buf.Length);
 
@@ -133,6 +142,7 @@ internal static class Hid
     [DllImport("hid.dll")] private static extern bool HidD_GetAttributes(SafeFileHandle h, ref HIDD_ATTRIBUTES attr);
     [DllImport("hid.dll")] private static extern bool HidD_SetFeature(SafeFileHandle h, byte[] buf, int len);
     [DllImport("hid.dll")] private static extern bool HidD_GetFeature(SafeFileHandle h, byte[] buf, int len);
+    [DllImport("hid.dll")] private static extern bool HidD_SetOutputReport(SafeFileHandle h, byte[] buf, int len);
     [DllImport("hid.dll")] private static extern bool HidD_GetPreparsedData(SafeFileHandle h, out IntPtr data);
     [DllImport("hid.dll")] private static extern bool HidD_FreePreparsedData(IntPtr data);
     [DllImport("hid.dll")] private static extern int HidP_GetCaps(IntPtr data, [Out] ushort[] caps);

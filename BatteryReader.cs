@@ -63,6 +63,9 @@ internal static class BatteryReader
         ("Logitech", LogitechReader.Read),
         ("SteelSeries", SteelSeriesReader.Read),
         ("Corsair", CorsairReader.Read),
+        ("HyperX", HyperXReader.Read),
+        ("Glorious", GloriousReader.Read),
+        ("Compx (Pulsar, ATK/VXE, Kysona и др.)", CompxReader.Read),
     };
 
     private static List<BatteryDevice> ReadDongles(StringBuilder? log = null)
