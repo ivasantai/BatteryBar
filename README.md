@@ -59,3 +59,7 @@ The output is `publish\BatteryBar.exe`.
 - Settings are stored in `%APPDATA%\BatteryBar\settings.json`.
 - **Start with Windows** adds an entry under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`.
 - When Razer Synapse is running, it talks to the device at the same time, so a query can occasionally fail. In that case the last known level is shown for up to 2 hours, which also covers a mouse that has gone to sleep.
+
+## License
+
+[MIT](LICENSE)
