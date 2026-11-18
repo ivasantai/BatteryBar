@@ -19,9 +19,13 @@ internal sealed class TaskbarWidget : Form
     private readonly System.Windows.Forms.Timer _pollTimer = new() { Interval = PollIntervalMs };
     private readonly System.Windows.Forms.Timer _placementTimer = new() { Interval = PlacementIntervalMs };
     private readonly System.Windows.Forms.Timer _debounceTimer = new() { Interval = 2_000 };
-    private readonly ToolTip _toolTip = new() { InitialDelay = 400, ShowAlways = true };
+    private readonly TipWindow _tip = new();
+    private readonly System.Windows.Forms.Timer _tipTimer = new() { Interval = 500 };
+    private readonly System.Windows.Forms.Timer _hoverTimer = new() { Interval = 100 };
+    private bool _tipVisible;
     private readonly ContextMenuStrip _menu = new();
     private readonly List<DeviceWatcher> _watchers = new();
+    private readonly TrayIcon _tray;
 
     private List<BatteryDevice> _devices = new();
 
@@ -58,14 +62,15 @@ internal sealed class TaskbarWidget : Form
 
         _pollTimer.Tick += (_, _) => RefreshDevices();
         _placementTimer.Tick += (_, _) => { UpdatePlacement(); BringToTop(); };
+        _hoverTimer.Tick += (_, _) => CheckHover();
+        _tipTimer.Tick += (_, _) => { _tipTimer.Stop(); ShowTip(); };
         _debounceTimer.Tick += (_, _) => { _debounceTimer.Stop(); RefreshDevices(); };
 
         BuildMenu();
+        _tray = new TrayIcon(_menu, RefreshDevices);
         MouseDown += OnMouseDown;
         MouseMove += OnMouseMove;
         MouseUp += OnMouseUp;
-        MouseEnter += (_, _) => { _hover = true; Render(); };
-        MouseLeave += (_, _) => { _hover = false; Render(); };
     }
 
     protected override CreateParams CreateParams
@@ -88,11 +93,15 @@ internal sealed class TaskbarWidget : Form
         StartWatchers();
         _pollTimer.Start();
         _placementTimer.Start();
+        _hoverTimer.Start();
+        _tray.Update(_devices, VisibleDevices, DeviceLine); // значок появляется сразу, до первого опроса
         RefreshDevices();
     }
 
     protected override void OnFormClosed(FormClosedEventArgs e)
     {
+        _tray.Dispose();
+        _tip.Dispose();
         if (_winEventHook != IntPtr.Zero) Native.UnhookWinEvent(_winEventHook);
         foreach (var w in _watchers)
         {
@@ -178,6 +187,7 @@ internal sealed class TaskbarWidget : Form
     {
         if (!IsHandleCreated || IsDisposed) return;
         var shown = VisibleDevices;
+        _tray.Update(_devices, shown, DeviceLine);
         if (shown.Count == 0 || !TryGetTaskbar(out var tb, out _))
         {
             HideWidget();
@@ -305,12 +315,61 @@ internal sealed class TaskbarWidget : Form
         return p;
     }
 
+    // Подсказка управляется вручную: стандартная подсказка WinForms не всегда замечает уход курсора
+    // с неактивируемого layered-окна и оставалась висеть на экране.
+
+    private string TooltipText() => _devices.Count == 0
+        ? "Нет подключённых устройств с данными о заряде"
+        : string.Join(Environment.NewLine, _devices.Select(DeviceLine));
+
+    /// <summary>Обновляет текст, если подсказка уже показана (например, пришли новые данные).</summary>
     private void UpdateTooltip()
     {
-        string tip = _devices.Count == 0
-            ? "Нет подключённых устройств с данными о заряде"
-            : string.Join(Environment.NewLine, _devices.Select(DeviceLine));
-        _toolTip.SetToolTip(this, tip);
+        if (_tipVisible) ShowTip();
+    }
+
+    // Положение берём у системы: окно двигается через UpdateLayeredWindow/SetWindowPos, и Bounds формы может отставать.
+    private bool CursorOverWidget()
+    {
+        if (!_shown || !IsHandleCreated || !Native.GetWindowRect(Handle, out var r)) return false;
+        var c = Cursor.Position;
+        return c.X >= r.Left && c.X < r.Right && c.Y >= r.Top && c.Y < r.Bottom;
+    }
+
+    private void ShowTip()
+    {
+        if (!CursorOverWidget() || _dragging || _menu.Visible) { HideTip(); return; }
+        if (!Native.GetWindowRect(Handle, out var r)) return;
+        // Над виджетом, чтобы не перекрывать панель задач.
+        _tip.ShowAbove(TooltipText(), Rectangle.FromLTRB(r.Left, r.Top, r.Right, r.Bottom));
+        _tipVisible = true;
+    }
+
+    private void HideTip()
+    {
+        _tipTimer.Stop();
+        _tipVisible = false;
+        if (_tip.Visible) _tip.Hide();
+    }
+
+    /// <summary>
+    /// Наведение определяется опросом положения курсора (каждые 100 мс): сообщения о входе/уходе мыши
+    /// до неактивируемого layered-окна доходят ненадёжно.
+    /// </summary>
+    private void CheckHover()
+    {
+        if (_dragging) return;
+        bool over = CursorOverWidget();
+        if (over)
+        {
+            if (!_hover) { _hover = true; Render(); }
+            if (!_tipVisible && !_tipTimer.Enabled && !_menu.Visible) _tipTimer.Start();
+        }
+        else
+        {
+            HideTip();
+            if (_hover) { _hover = false; Render(); }
+        }
     }
 
     // ---------------- Положение на панели задач ----------------
@@ -424,6 +483,7 @@ internal sealed class TaskbarWidget : Form
 
     private void HideWidget()
     {
+        HideTip();
         if (!_shown) return;
         _shown = false;
         Hide();
@@ -433,6 +493,7 @@ internal sealed class TaskbarWidget : Form
 
     private void OnMouseDown(object? sender, MouseEventArgs e)
     {
+        HideTip();
         if (e.Button != MouseButtons.Left) return;
         _dragging = true;
         _dragMoved = false;
@@ -443,7 +504,7 @@ internal sealed class TaskbarWidget : Form
 
     private void OnMouseMove(object? sender, MouseEventArgs e)
     {
-        if (!_dragging) return;
+        if (!_dragging) return; // наведение отслеживает CheckHover
         int dx = Cursor.Position.X - _dragStartCursorX;
         if (!_dragMoved && Math.Abs(dx) < 4) return;
         _dragMoved = true;
@@ -478,6 +539,7 @@ internal sealed class TaskbarWidget : Form
         _menu.ShowCheckMargin = true;
         _menu.Opening += (_, _) =>
         {
+            HideTip();
             _menu.Items.Clear();
             if (_devices.Count == 0)
                 _menu.Items.Add(new ToolStripMenuItem("Нет устройств с данными о заряде") { Enabled = false });

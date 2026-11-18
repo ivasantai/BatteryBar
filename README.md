@@ -10,6 +10,7 @@ A tiny Windows app that shows the battery level of your wireless devices right o
 - Sits on the taskbar to the left of the system tray. You can drag it to another spot, and the position is remembered.
 - Matches the light or dark taskbar theme. The level turns red at 15% and below.
 - Hover to see device names. Right-click for the menu: refresh, hide sleeping devices, start with Windows, reset position, exit.
+- **Tray icon** with the same menu, so it's always reachable, even when every device is asleep and the widget is hidden. The icon is a small battery filled to the lowest current level, and hovering it lists every device. On Windows 11, new tray icons go under the "^" overflow at first; drag the icon onto the taskbar to keep it visible.
 - **Hides sleeping devices.** When a mouse goes to sleep, it disappears from the taskbar, and it comes back when you move it. This is handy if you have two mice and only use one of them. You can turn it off in the menu (**Скрывать уснувшие устройства**).
 - Hides itself when a full-screen app is running or the taskbar is auto-hidden.
 - Updates every 15 seconds, and right away when a device connects or disconnects.
@@ -82,7 +83,7 @@ The output is `publish\BatteryBar.exe`.
 - Settings are stored in `%APPDATA%\BatteryBar\settings.json`.
 - **Start with Windows** adds an entry under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`.
 - When Razer Synapse is running, it talks to the device at the same time, so a query can occasionally fail. In that case the last known level is shown, and the device doesn't flicker on the taskbar. A real "device asleep" answer is told apart from such interference.
-- If every device is asleep, the widget hides completely and the menu isn't available until one of them wakes up.
+- If every device is asleep, the widget hides completely, but the menu stays available from the tray icon.
 - Vendor software (G HUB, SteelSeries GG, iCUE, NGENUITY) can stay running. BatteryBar only sends read-only battery queries.
 
 ## License
