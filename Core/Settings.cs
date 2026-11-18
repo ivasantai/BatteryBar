@@ -12,6 +12,9 @@ internal sealed class Settings
     /// <summary>Не показывать устройства, которые сейчас спят или не на связи.</summary>
     public bool HideInactive { get; set; } = true;
 
+    /// <summary>Автоматически скачивать и устанавливать новые версии из GitHub Releases.</summary>
+    public bool AutoUpdate { get; set; } = true;
+
     private static string FilePath =>
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "BatteryBar", "settings.json");
 

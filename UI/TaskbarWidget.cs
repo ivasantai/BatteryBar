@@ -22,6 +22,10 @@ internal sealed class TaskbarWidget : Form
     private readonly TipWindow _tip = new();
     private readonly System.Windows.Forms.Timer _tipTimer = new() { Interval = 500 };
     private readonly System.Windows.Forms.Timer _hoverTimer = new() { Interval = 100 };
+    // Первая проверка обновлений через 20 с после запуска, затем каждые 6 часов.
+    private readonly System.Windows.Forms.Timer _updateTimer = new() { Interval = 20_000 };
+    private bool _updating;
+    private Version? _notifiedVersion;
     private bool _tipVisible;
     private readonly ContextMenuStrip _menu = new();
     private readonly List<DeviceWatcher> _watchers = new();
@@ -63,6 +67,11 @@ internal sealed class TaskbarWidget : Form
         _pollTimer.Tick += (_, _) => RefreshDevices();
         _placementTimer.Tick += (_, _) => { UpdatePlacement(); BringToTop(); };
         _hoverTimer.Tick += (_, _) => CheckHover();
+        _updateTimer.Tick += (_, _) =>
+        {
+            _updateTimer.Interval = (int)TimeSpan.FromHours(6).TotalMilliseconds;
+            _ = CheckForUpdatesAsync(manual: false);
+        };
         _tipTimer.Tick += (_, _) => { _tipTimer.Stop(); ShowTip(); };
         _debounceTimer.Tick += (_, _) => { _debounceTimer.Stop(); RefreshDevices(); };
 
@@ -94,7 +103,13 @@ internal sealed class TaskbarWidget : Form
         _pollTimer.Start();
         _placementTimer.Start();
         _hoverTimer.Start();
+        _updateTimer.Start();
         _tray.Update(_devices, VisibleDevices, DeviceLine); // значок появляется сразу, до первого опроса
+        if (Program.JustUpdated)
+        {
+            Updater.Log("запущена после обновления");
+            _tray.Notify("BatteryBar обновлён", $"Установлена версия {Updater.Current}.");
+        }
         RefreshDevices();
     }
 
@@ -576,8 +591,73 @@ internal sealed class TaskbarWidget : Form
             _menu.Items.Add(reset);
 
             _menu.Items.Add(new ToolStripSeparator());
+            _menu.Items.Add(new ToolStripMenuItem($"BatteryBar {Updater.Current}") { Enabled = false });
+            _menu.Items.Add("Проверить обновления", null, (_, _) => _ = CheckForUpdatesAsync(manual: true));
+
+            var auto = new ToolStripMenuItem("Обновлять автоматически") { Checked = _settings.AutoUpdate };
+            auto.Click += (_, _) =>
+            {
+                _settings.AutoUpdate = !_settings.AutoUpdate;
+                _settings.Save();
+            };
+            _menu.Items.Add(auto);
+
+            _menu.Items.Add(new ToolStripSeparator());
             _menu.Items.Add("Выход", null, (_, _) => Close());
         };
+    }
+
+    // ---------------- Обновления ----------------
+
+    private async Task CheckForUpdatesAsync(bool manual)
+    {
+        if (_updating) return;
+        _updating = true;
+        try
+        {
+            var release = await Updater.CheckAsync();
+            if (release == null || !Updater.IsNewer(release))
+            {
+                if (manual) _tray.Notify("BatteryBar", $"Установлена последняя версия {Updater.Current}.");
+                return;
+            }
+
+            // Автообновление выключено: только сообщаем (один раз на версию).
+            if (!manual && !_settings.AutoUpdate)
+            {
+                if (_notifiedVersion != release.Version)
+                {
+                    _notifiedVersion = release.Version;
+                    _tray.Notify("Доступно обновление BatteryBar",
+                        $"Версия {release.Version}. Нажмите, чтобы открыть страницу релиза.",
+                        () => Updater.OpenPage(release.PageUrl));
+                }
+                return;
+            }
+
+            if (!Updater.CanWriteToExeFolder())
+            {
+                Updater.Log("нет прав на запись в папку приложения");
+                _tray.Notify("Доступно обновление BatteryBar",
+                    $"Версия {release.Version}. Нет прав на запись в папку программы — нажмите, чтобы скачать вручную.",
+                    () => Updater.OpenPage(release.PageUrl));
+                return;
+            }
+
+            if (manual) _tray.Notify("BatteryBar", $"Загружается версия {release.Version}…");
+            var file = await Updater.DownloadAsync(release);
+            Updater.ApplyAndRestart(file);
+            Close(); // новая версия уже запущена и ждёт завершения этого процесса
+        }
+        catch (Exception ex)
+        {
+            Updater.Log("ошибка обновления: " + ex.Message);
+            if (manual) _tray.Notify("Не удалось обновить BatteryBar", ex.Message);
+        }
+        finally
+        {
+            _updating = false;
+        }
     }
 
     private static string DeviceLine(BatteryDevice d) =>

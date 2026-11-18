@@ -19,6 +19,18 @@ internal sealed class TrayIcon : IDisposable
         _icon.ContextMenuStrip = menu;
         _icon.Text = "BatteryBar";
         _icon.DoubleClick += (_, _) => onDoubleClick();
+        _icon.BalloonTipClicked += (_, _) => { var a = _balloonClick; _balloonClick = null; a?.Invoke(); };
+        _icon.BalloonTipClosed += (_, _) => _balloonClick = null;
+    }
+
+    private Action? _balloonClick;
+
+    /// <summary>Уведомление из трея; <paramref name="onClick"/> — действие по щелчку.</summary>
+    public void Notify(string title, string text, Action? onClick = null)
+    {
+        _balloonClick = onClick;
+        _icon.Visible = true;
+        _icon.ShowBalloonTip(8000, title, text, ToolTipIcon.Info);
     }
 
     public void Update(IReadOnlyList<BatteryDevice> all, IReadOnlyList<BatteryDevice> visible, Func<BatteryDevice, string> line)

@@ -12,6 +12,7 @@ A tiny Windows app that shows the battery level of your wireless devices right o
 - Hover to see device names. Right-click for the menu: refresh, hide sleeping devices, start with Windows, reset position, exit.
 - **Tray icon** with the same menu, so it's always reachable, even when every device is asleep and the widget is hidden. The icon is a small battery filled to the lowest current level, and hovering it lists every device. On Windows 11, new tray icons go under the "^" overflow at first; drag the icon onto the taskbar to keep it visible.
 - **Hides sleeping devices.** When a mouse goes to sleep, it disappears from the taskbar, and it comes back when you move it. This is handy if you have two mice and only use one of them. You can turn it off in the menu (**Скрывать уснувшие устройства**).
+- **Automatic updates** from GitHub Releases. The app checks 20 seconds after it starts and then every 6 hours. A new `BatteryBar.exe` is downloaded and checked (file size, the SHA-256 published by GitHub, and the version inside the file), then it replaces the running exe and the app restarts. You can turn this off or check manually from the menu. If the app's folder isn't writable, you only get a notification with a link to the release.
 - Hides itself when a full-screen app is running or the taskbar is auto-hidden.
 - Updates every 15 seconds, and right away when a device connects or disconnects.
 - DPI-aware (per-monitor).
@@ -78,9 +79,18 @@ dotnet publish -c Release -p:PublishSingleFile=true --self-contained false -o pu
 
 The output is `publish\BatteryBar.exe`.
 
+Project layout:
+
+| Folder | Contents |
+|---|---|
+| `Core/` | Settings and the updater |
+| `Devices/` | Device polling, Bluetooth, and the shared HID layer |
+| `Devices/Vendors/` | One reader per brand or protocol (Razer, Logitech, SteelSeries, Corsair, HyperX, Glorious, Compx, SinoWealth, headsets) |
+| `UI/` | Taskbar widget, tray icon, tooltip, and text and glyph rendering |
+
 ## Notes
 
-- Settings are stored in `%APPDATA%\BatteryBar\settings.json`.
+- Settings are stored in `%APPDATA%\BatteryBar\settings.json`. The update log is in `%LOCALAPPDATA%\BatteryBar\update.log`.
 - **Start with Windows** adds an entry under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`.
 - When Razer Synapse is running, it talks to the device at the same time, so a query can occasionally fail. In that case the last known level is shown, and the device doesn't flicker on the taskbar. A real "device asleep" answer is told apart from such interference.
 - If every device is asleep, the widget hides completely, but the menu stays available from the tray icon.

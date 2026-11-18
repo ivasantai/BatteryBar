@@ -2,6 +2,9 @@ namespace BatteryBar;
 
 internal static class Program
 {
+    /// <summary>Процесс запущен сразу после автообновления.</summary>
+    public static bool JustUpdated { get; private set; }
+
     [STAThread]
     private static void Main(string[] args)
     {
@@ -15,6 +18,15 @@ internal static class Program
         }
 
         BatteryReader.Demo = args.Contains("--demo");
+        JustUpdated = args.Contains("--updated");
+
+        // После автообновления: дождаться выхода старой версии, затем убрать её файл.
+        int waitIdx = Array.IndexOf(args, "--wait-pid");
+        if (waitIdx >= 0 && waitIdx + 1 < args.Length && int.TryParse(args[waitIdx + 1], out int oldPid))
+        {
+            try { System.Diagnostics.Process.GetProcessById(oldPid).WaitForExit(15_000); } catch { }
+        }
+        Updater.Cleanup();
 
         using var mutex = new Mutex(true, @"Local\BatteryBar.SingleInstance", out bool isNew);
         if (!isNew) return;
