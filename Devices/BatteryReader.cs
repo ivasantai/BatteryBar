@@ -50,11 +50,26 @@ internal static class BatteryReader
         try { aep = await GetBluetoothEndpointsAsync(); }
         catch { /* WinRT недоступен — покажем всё, у чего есть заряд */ }
         var nodes = await nodesTask;
-        var list = Merge(nodes, aep);
-
-        list.AddRange(await Task.Run(() => ReadDongles()));
-
+        var list = Combine(Merge(nodes, aep), await Task.Run(() => ReadDongles()), aep);
         return list.OrderBy(d => d.Kind).ThenBy(d => d.Name, StringComparer.CurrentCultureIgnoreCase).ToList();
+    }
+
+    /// <summary>
+    /// Объединяет устройства, о которых заряд сообщает Windows (Bluetooth), с прочитанными напрямую.
+    /// Устройство, прочитанное напрямую по Bluetooth (Logitech HID++), имеет настоящий ContainerId:
+    /// если Windows уже сообщает его заряд — не дублируем; если оно отключено — не показываем.
+    /// </summary>
+    private static List<BatteryDevice> Combine(List<BatteryDevice> bluetooth, List<BatteryDevice> direct, Dictionary<Guid, AepInfo>? aep)
+    {
+        var result = new List<BatteryDevice>(bluetooth);
+        var known = new HashSet<Guid>(bluetooth.Select(d => d.ContainerId));
+        foreach (var d in direct)
+        {
+            if (known.Contains(d.ContainerId)) continue;
+            if (aep != null && aep.TryGetValue(d.ContainerId, out var info) && !info.Connected) continue;
+            result.Add(d);
+        }
+        return result;
     }
 
     /// <summary>Устройства с собственными донглами (каждый производитель — свой протокол).</summary>
@@ -283,7 +298,7 @@ internal static class BatteryReader
         var dongles = ReadDongles(sb);
 
         sb.AppendLine().AppendLine("=== Итог (что покажет панель) ===");
-        foreach (var d in Merge(nodes, aep).Concat(dongles))
+        foreach (var d in Combine(Merge(nodes, aep), dongles, aep))
             sb.AppendLine($"{d.Kind,-10} {d.Level,3}%  {d.Name}{(d.Asleep ? "  [спит — на панели скрыто]" : "")}");
         return sb.ToString();
     }

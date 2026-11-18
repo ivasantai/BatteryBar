@@ -28,6 +28,7 @@ A tiny Windows app that shows the battery level of your wireless devices right o
 | **Bluetooth LE** (mice, keyboards, gamepads with the GATT Battery Service) | Same as above |
 | **Razer 2.4 GHz dongles** (tested with Viper Ultimate) | Razer HID feature report protocol |
 | **Logitech** Lightspeed, Unifying and Bolt receivers, or a cable connection | HID++ 2.0: Unified Battery (0x1004), Battery Status (0x1000) or Battery Voltage (0x1001). Voltage readings are converted to an approximate percentage. |
+| **Logitech over Bluetooth** (MX Master, MX Anywhere, MX Keys, Lift, POP, …) | HID++ 2.0 over the Bluetooth vendor collection (`FF43:0202`), the same way Solaar and Logi Options+ do it. A device that Windows already reports a battery level for isn't shown twice, and a disconnected device isn't queried. |
 | **SteelSeries** Aerox 3/5/9 Wireless, Prime Wireless, Prime Mini Wireless, Rival 3 Wireless (Gen 1 and 2), Rival 650 Wireless | Battery commands from [rivalcfg](https://github.com/flozz/rivalcfg) |
 | **Corsair** Slipstream dongles (Harpoon, M65 Ultra, M75, Dark Core RGB Pro, …) | Bragi protocol, based on [ckb-next](https://github.com/ckb-next/ckb-next) and [OpenLinkHub](https://github.com/jurkovic-nikola/OpenLinkHub) |
 | **HyperX** Pulsefire Haste 2 Wireless, Haste 2 Core Wireless | NGENUITY "universal" protocol, based on [ngenuity-linux-cli](https://github.com/PMarinov1994/ngenuity-linux-cli) |

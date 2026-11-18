@@ -74,6 +74,49 @@ internal static class Hid
         return !h.IsInvalid && HidD_SetOutputReport(h, buf, buf.Length);
     }
 
+    /// <summary>
+    /// ContainerId физического устройства по пути HID-интерфейса — тот же, что у его Bluetooth-записи в Windows.
+    /// </summary>
+    public static Guid? GetContainerId(string interfacePath)
+    {
+        try
+        {
+            var keyInst = new DEVPROPKEY("78C34FC8-104A-4ACA-9EA4-524D52996E57", 256); // DEVPKEY_Device_InstanceId
+            uint size = 0;
+            if (CM_Get_Device_Interface_PropertyW(interfacePath, ref keyInst, out _, null, ref size, 0) != 0x1A || size == 0) return null;
+            var buf = new byte[size];
+            if (CM_Get_Device_Interface_PropertyW(interfacePath, ref keyInst, out _, buf, ref size, 0) != 0) return null;
+            string instanceId = Encoding.Unicode.GetString(buf).TrimEnd('\0');
+
+            if (CM_Locate_DevNodeW(out uint devInst, instanceId, 0) != 0) return null;
+            var keyContainer = new DEVPROPKEY("8C7ED206-3F8A-4827-B3AB-AE9E1FAEFC6C", 2); // DEVPKEY_Device_ContainerId
+            size = 16;
+            var g = new byte[16];
+            if (CM_Get_DevNode_PropertyW(devInst, ref keyContainer, out _, g, ref size, 0) != 0) return null;
+            return new Guid(g);
+        }
+        catch { return null; }
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct DEVPROPKEY
+    {
+        public Guid fmtid;
+        public uint pid;
+        public DEVPROPKEY(string g, uint p) { fmtid = new Guid(g); pid = p; }
+    }
+
+    [DllImport("cfgmgr32.dll", CharSet = CharSet.Unicode)]
+    private static extern int CM_Get_Device_Interface_PropertyW(string iface, ref DEVPROPKEY key, out uint type,
+        [Out] byte[]? buffer, ref uint size, uint flags);
+
+    [DllImport("cfgmgr32.dll", CharSet = CharSet.Unicode)]
+    private static extern int CM_Locate_DevNodeW(out uint devInst, string id, uint flags);
+
+    [DllImport("cfgmgr32.dll")]
+    private static extern int CM_Get_DevNode_PropertyW(uint devInst, ref DEVPROPKEY key, out uint type,
+        [Out] byte[] buffer, ref uint size, uint flags);
+
     public static bool SetFeature(SafeFileHandle h, byte[] buf) => HidD_SetFeature(h, buf, buf.Length);
     public static bool GetFeature(SafeFileHandle h, byte[] buf) => HidD_GetFeature(h, buf, buf.Length);
 

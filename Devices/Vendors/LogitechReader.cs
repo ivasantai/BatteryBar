@@ -4,7 +4,7 @@ using System.Text;
 namespace BatteryBar;
 
 /// <summary>
-/// Logitech HID++ 2.0: приёмники Lightspeed / Unifying / Bolt и устройства, подключённые кабелем.
+/// Logitech HID++ 2.0: приёмники Lightspeed / Unifying / Bolt, устройства, подключённые кабелем, и по Bluetooth.
 /// Заряд берётся из одной из фич: 0x1004 UNIFIED_BATTERY, 0x1000 BATTERY_STATUS, 0x1001 BATTERY_VOLTAGE.
 /// </summary>
 internal static class LogitechReader
@@ -67,11 +67,34 @@ internal static class LogitechReader
                     if (dev != null) result.Add(dev);
                 }
             }
+
+            // Bluetooth (MX Master / Anywhere / Keys, Lift, POP и т.д.): HID++ идёт через коллекцию FF43:0202,
+            // только длинные репорты, обращение напрямую к устройству (индекс 0xFF).
+            // USB-донглы гарнитур Logitech используют похожую коллекцию — их обрабатывает HeadsetReader,
+            // поэтому здесь берём только устройства, подключённые по Bluetooth.
+            foreach (var info in Hid.Enumerate(Vid).Where(i => i.UsagePage == 0xFF43 && i.Usage == 0x0202 && IsBluetooth(i.Path)))
+            {
+                if (info.OutLen < 20 || info.InLen < 20) continue;
+                using var ch = HidChannel.Open(info);
+                if (ch == null) { log?.AppendLine($"  BT {info.Pid:X4}: не удалось открыть"); continue; }
+                log?.AppendLine($"  {info.Product ?? "Logitech"} pid={info.Pid:X4} по Bluetooth");
+
+                // Реальный ContainerId: по нему устройство сопоставляется с Bluetooth-записью Windows
+                // (не показывать дважды и не опрашивать отключённое).
+                var dev = QueryDevice(ch, new[] { ch }, info, 0xFF, log, Hid.GetContainerId(info.Path));
+                if (dev != null) result.Add(dev);
+            }
             return result;
         }
     }
 
-    private static BatteryDevice? QueryDevice(HidChannel longCh, HidChannel[] channels, HidInfo info, byte idx, StringBuilder? log)
+    /// <summary>HID-устройство подключено по Bluetooth: LE (HOGP, сервис 0x1812) или классический HID (0x1124).</summary>
+    private static bool IsBluetooth(string path) =>
+        path.Contains("00001812-0000-1000-8000-00805f9b34fb", StringComparison.OrdinalIgnoreCase) ||
+        path.Contains("00001124-0000-1000-8000-00805f9b34fb", StringComparison.OrdinalIgnoreCase);
+
+    private static BatteryDevice? QueryDevice(HidChannel longCh, HidChannel[] channels, HidInfo info, byte idx,
+        StringBuilder? log, Guid? container = null)
     {
         string key = $"{info.DeviceKey}#{idx}";
         if (!Cache.TryGetValue(key, out var c))
@@ -97,7 +120,7 @@ internal static class LogitechReader
             Cache.Remove(key); // при следующем опросе переопределим (могли переподключить другое устройство)
             return null;
         }
-        return new BatteryDevice(StableGuid(key), c.Name ?? "Logitech", level.Value, c.Kind);
+        return new BatteryDevice(container ?? StableGuid(key), c.Name ?? "Logitech", level.Value, c.Kind);
     }
 
     private static int? ReadLevel(HidChannel longCh, HidChannel[] channels, byte idx, Cached c)
