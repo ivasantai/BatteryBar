@@ -7,7 +7,8 @@ namespace BatteryBar;
 
 internal enum DeviceKind { Generic, Headphones, Mouse, Keyboard, Gamepad, Phone }
 
-internal sealed record BatteryDevice(Guid ContainerId, string Name, int Level, DeviceKind Kind);
+/// <param name="Asleep">Устройство сейчас спит/не на связи; Level — последнее известное значение.</param>
+internal sealed record BatteryDevice(Guid ContainerId, string Name, int Level, DeviceKind Kind, bool Asleep = false);
 
 /// <summary>
 /// Читает уровень заряда беспроводных устройств.
@@ -66,6 +67,8 @@ internal static class BatteryReader
         ("HyperX", HyperXReader.Read),
         ("Glorious", GloriousReader.Read),
         ("Compx (Pulsar, ATK/VXE, Kysona и др.)", CompxReader.Read),
+        ("SinoWealth 2.4G (Hator, Redragon и др.)", SinoWealthReader.Read),
+        ("Гарнитуры (SteelSeries, HyperX, Logitech, Corsair)", HeadsetReader.Read),
     };
 
     private static List<BatteryDevice> ReadDongles(StringBuilder? log = null)
@@ -281,7 +284,7 @@ internal static class BatteryReader
 
         sb.AppendLine().AppendLine("=== Итог (что покажет панель) ===");
         foreach (var d in Merge(nodes, aep).Concat(dongles))
-            sb.AppendLine($"{d.Kind,-10} {d.Level,3}%  {d.Name}");
+            sb.AppendLine($"{d.Kind,-10} {d.Level,3}%  {d.Name}{(d.Asleep ? "  [спит — на панели скрыто]" : "")}");
         return sb.ToString();
     }
 }

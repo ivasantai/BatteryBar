@@ -9,6 +9,9 @@ internal sealed class Settings
     /// null — ставить автоматически слева от области уведомлений.</summary>
     public int? RightOffset { get; set; }
 
+    /// <summary>Не показывать устройства, которые сейчас спят или не на связи.</summary>
+    public bool HideInactive { get; set; } = true;
+
     private static string FilePath =>
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "BatteryBar", "settings.json");
 

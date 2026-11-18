@@ -12,7 +12,7 @@ namespace BatteryBar;
 /// </summary>
 internal sealed class TaskbarWidget : Form
 {
-    private const int PollIntervalMs = 30_000;   // опрос заряда
+    private const int PollIntervalMs = 15_000;   // опрос заряда (и обнаружение уснувших/проснувшихся мышей)
     private const int PlacementIntervalMs = 1_000; // слежение за панелью задач
 
     private readonly Settings _settings = Settings.Load();
@@ -24,6 +24,9 @@ internal sealed class TaskbarWidget : Form
     private readonly List<DeviceWatcher> _watchers = new();
 
     private List<BatteryDevice> _devices = new();
+
+    /// <summary>Что показывать на панели: уснувшие устройства скрываются, если включена настройка.</summary>
+    private List<BatteryDevice> VisibleDevices => _settings.HideInactive ? _devices.Where(d => !d.Asleep).ToList() : _devices;
     private bool _refreshing;
     private bool _hover;
     private bool _shown;
@@ -174,7 +177,8 @@ internal sealed class TaskbarWidget : Form
     private void Render()
     {
         if (!IsHandleCreated || IsDisposed) return;
-        if (_devices.Count == 0 || !TryGetTaskbar(out var tb, out _))
+        var shown = VisibleDevices;
+        if (shown.Count == 0 || !TryGetTaskbar(out var tb, out _))
         {
             HideWidget();
             UpdateTooltip();
@@ -197,7 +201,7 @@ internal sealed class TaskbarWidget : Form
         int iconGap = (int)Math.Round(6 * scale);
         int itemGap = (int)Math.Round(16 * scale);
 
-        var items = _devices.Select(d => (
+        var items = shown.Select(d => (
             Icon: GlyphRenderer.Render(Glyph(d.Kind), IconFontName, iconPx),
             Text: GlyphRenderer.Render(d.Level + "%", TextFontName, textPx),
             Color: d.Level <= 15 ? low : fg)).ToList();
@@ -305,7 +309,7 @@ internal sealed class TaskbarWidget : Form
     {
         string tip = _devices.Count == 0
             ? "Нет подключённых устройств с данными о заряде"
-            : string.Join(Environment.NewLine, _devices.Select(d => $"{d.Name} — {d.Level}%"));
+            : string.Join(Environment.NewLine, _devices.Select(DeviceLine));
         _toolTip.SetToolTip(this, tip);
     }
 
@@ -352,7 +356,7 @@ internal sealed class TaskbarWidget : Form
     private void UpdatePlacement()
     {
         if (!IsHandleCreated || IsDisposed || _dragging) return;
-        if (_devices.Count == 0 || _size.IsEmpty || !ShouldBeVisible())
+        if (VisibleDevices.Count == 0 || _size.IsEmpty || !ShouldBeVisible())
         {
             HideWidget();
             return;
@@ -478,10 +482,19 @@ internal sealed class TaskbarWidget : Form
             if (_devices.Count == 0)
                 _menu.Items.Add(new ToolStripMenuItem("Нет устройств с данными о заряде") { Enabled = false });
             foreach (var d in _devices)
-                _menu.Items.Add(new ToolStripMenuItem($"{d.Name} — {d.Level}%") { Enabled = false });
+                _menu.Items.Add(new ToolStripMenuItem(DeviceLine(d)) { Enabled = false });
             _menu.Items.Add(new ToolStripSeparator());
 
             _menu.Items.Add("Обновить", null, (_, _) => RefreshDevices());
+
+            var hide = new ToolStripMenuItem("Скрывать уснувшие устройства") { Checked = _settings.HideInactive };
+            hide.Click += (_, _) =>
+            {
+                _settings.HideInactive = !_settings.HideInactive;
+                _settings.Save();
+                Render();
+            };
+            _menu.Items.Add(hide);
 
             var autostart = new ToolStripMenuItem("Запускать вместе с Windows") { Checked = SafeAutostart() };
             autostart.Click += (_, _) =>
@@ -504,6 +517,9 @@ internal sealed class TaskbarWidget : Form
             _menu.Items.Add("Выход", null, (_, _) => Close());
         };
     }
+
+    private static string DeviceLine(BatteryDevice d) =>
+        d.Asleep ? $"{d.Name} — {d.Level}% (спит)" : $"{d.Name} — {d.Level}%";
 
     private static bool SafeAutostart()
     {

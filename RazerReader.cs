@@ -50,12 +50,13 @@ internal static class RazerReader
                 using var h = Open(path);
                 if (h.IsInvalid) continue;
 
-                int? level = QueryBattery(h, pid, log);
-                log?.AppendLine($"  {pid}: {path} -> {(level?.ToString() ?? "нет ответа")}");
+                int? level = QueryBattery(h, pid, log, out bool asleep);
+                log?.AppendLine($"  {pid}: {path} -> {(level?.ToString() ?? (asleep ? "мышь спит" : "нет ответа"))}");
                 if (level != null)
                     LastKnown[pid] = (level.Value, DateTime.UtcNow);
                 else if (LastKnown.TryGetValue(pid, out var last) && DateTime.UtcNow - last.At < LastKnownTtl)
-                    level = last.Level; // мышь уснула — показываем последнее известное значение
+                    level = last.Level; // спит или ответ перебил Synapse — последнее известное значение
+                else asleep = false;
                 if (level == null) continue;
                 done.Add(pid);
 
@@ -63,18 +64,22 @@ internal static class RazerReader
                     GetProduct(h) ?? "Razer", @"\s+(Dongle|Receiver|Wireless Receiver)$", "",
                     System.Text.RegularExpressions.RegexOptions.IgnoreCase);
                 var kind = KindFromName(name) ?? (mousePids.Contains(pid) ? DeviceKind.Mouse : DeviceKind.Generic);
-                result.Add(new BatteryDevice(StableGuid("razer:" + pid), name, level.Value, kind));
+                result.Add(new BatteryDevice(StableGuid("razer:" + pid), name, level.Value, kind, asleep));
             }
             return result;
         }
     }
 
-    private static int? QueryBattery(SafeFileHandle h, string pid, StringBuilder? log)
+    /// <param name="asleep">true — донгл явно ответил «устройство не отвечает» (0x04), т.е. мышь спит или выключена.
+    /// false при нечитаемом ответе (его перебила программа Razer Synapse).</param>
+    private static int? QueryBattery(SafeFileHandle h, string pid, StringBuilder? log, out bool asleep)
     {
+        asleep = false;
         IEnumerable<byte> order = TxCache.TryGetValue(pid, out var cached)
             ? new[] { cached }.Concat(TransactionIds.Where(t => t != cached))
             : TransactionIds;
 
+        bool sawTimeout = false, sawOther = false;
         foreach (var tx in order)
         {
             var status = Transact(h, tx, 0x07, 0x80, 0x02, out var resp);
@@ -87,7 +92,9 @@ internal static class RazerReader
             // 0x05 — команда не поддерживается. 0x04 (timeout) бывает и при неверном transaction id,
             // и когда мышь спит — поэтому перебираем дальше.
             if (status == 0x05) return null;
+            if (status == 0x04) sawTimeout = true; else sawOther = true;
         }
+        asleep = sawTimeout && !sawOther;
         return null;
     }
 
@@ -108,22 +115,27 @@ internal static class RazerReader
         // Razer Synapse общается с устройством параллельно, и в ответ может прийти результат его команды.
         // Поэтому повторяем запрос, пока не получим ответ именно на наш (класс/id/transaction id).
         byte lastStatus = 0x00;
-        for (int send = 0; send < 6; send++)
+        for (int send = 0; send < 12; send++)
         {
             if (!HidD_SetFeature(h, req, ReportLen)) return 0xFF;
 
+            // Читаем быстро: Synapse каждые несколько десятков мс перезаписывает ответ своей командой.
             for (int attempt = 0; attempt < 8; attempt++)
             {
-                Thread.Sleep(attempt == 0 ? 60 : 30);
+                Thread.Sleep(attempt == 0 ? 20 : 15);
                 Array.Clear(resp);
                 if (!HidD_GetFeature(h, resp, ReportLen)) return 0xFF;
                 byte status = resp[o];
                 if (status == 0x01) continue; // busy — ждём
                 if (resp[o + 6] != cmdClass || resp[o + 7] != cmdId || resp[o + 1] != tx)
-                    break; // чужой ответ — отправим запрос заново
+                {
+                    // Чужой ответ — отправим запрос заново. Если и у чужой команды «таймаут» — мышь, скорее всего, спит.
+                    lastStatus = status == 0x04 ? (byte)0x04 : (byte)0x00;
+                    break;
+                }
                 return status;
             }
-            Thread.Sleep(30 + send * 20);
+            Thread.Sleep(10 + send * 7);
         }
         return lastStatus;
     }

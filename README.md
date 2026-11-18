@@ -9,9 +9,10 @@ A tiny Windows app that shows the battery level of your wireless devices right o
 - Shows each connected device as an icon plus a percentage (headphones, mouse, keyboard, gamepad, phone).
 - Sits on the taskbar to the left of the system tray. You can drag it to another spot, and the position is remembered.
 - Matches the light or dark taskbar theme. The level turns red at 15% and below.
-- Hover to see device names. Right-click for the menu: refresh, start with Windows, reset position, exit.
+- Hover to see device names. Right-click for the menu: refresh, hide sleeping devices, start with Windows, reset position, exit.
+- **Hides sleeping devices.** When a mouse goes to sleep, it disappears from the taskbar, and it comes back when you move it. This is handy if you have two mice and only use one of them. You can turn it off in the menu (**Скрывать уснувшие устройства**).
 - Hides itself when a full-screen app is running or the taskbar is auto-hidden.
-- Updates every 30 seconds, and right away when a device connects or disconnects.
+- Updates every 15 seconds, and right away when a device connects or disconnects.
 - DPI-aware (per-monitor).
 
 ## Supported devices
@@ -27,14 +28,24 @@ A tiny Windows app that shows the battery level of your wireless devices right o
 | **HyperX** Pulsefire Haste 2 Wireless, Haste 2 Core Wireless | NGENUITY "universal" protocol, based on [ngenuity-linux-cli](https://github.com/PMarinov1994/ngenuity-linux-cli) |
 | **Glorious** Model O / O- / D / D- Wireless, Model O 2 Wireless, Model D 2 PRO | Sinowealth vendor feature report, based on [glorious-ctl](https://github.com/louis4craft/glorious-ctl). Only known Glorious product IDs are queried, because other brands' devices use the same vendor ID. |
 | **Compx platform** (Pulsar X2 V2 / Xlite V3, ATK / VXE, Kysona and other brands built on the same chips) | 17-byte checksummed protocol, based on [python-pulsar-mouse-tool](https://github.com/andrewrabert/python-pulsar-mouse-tool) and the Linux hid-kysona driver. A reply is accepted only with a valid checksum. |
+| **SinoWealth 2.4G receiver** `258A:002F` (HATOR Pulsar 2 / Pulsar 2 Pro Wireless, tested; Redragon M910-KS / M690 PRO, Primus Gladius and others) | Read-only feature report commands 0x80 (link) and 0x90 (battery), based on [redragon-m910ks](https://github.com/dominikake/redragon-m910ks) |
 
-Only Razer support has been tested on real hardware. Support for the other brands follows the published protocols, but it hasn't been verified on actual devices. If your device doesn't show up, run `BatteryBar.exe --list` and open an issue with the contents of `devices.txt`.
+### Wireless headsets (USB dongle)
 
-**Hator:** we couldn't find any public USB IDs or protocol documentation for Hator mice. If your Hator mouse is built on the Compx platform, it will be picked up automatically. If it doesn't show up, please open an issue with the output of `--list` and your dongle's VID/PID.
+| Brand | Models |
+|---|---|
+| **SteelSeries** | Arctis 1 / 7 / 7X / 7P / 9, Arctis Pro Wireless, Arctis 7+, Arctis Nova 7 / 7P, Arctis Nova Pro Wireless |
+| **HyperX** | Cloud II Wireless, Cloud Alpha Wireless, Cloud Flight |
+| **Logitech** | G533, G535, G633 / G635 / G733 / G933 / G935, G PRO / PRO X Wireless |
+| **Corsair** | Void / Void Pro / Void Elite family, Void Wireless V2, Virtuoso MAX, HS80 MAX |
+
+Headset protocol details come from [HeadsetControl](https://github.com/Sapd/HeadsetControl).
+
+Razer and HATOR (SinoWealth receiver) support has been tested on real hardware. Support for the other brands and for headsets follows the published protocols, but it hasn't been verified on actual devices. If your device doesn't show up, run `BatteryBar.exe --list` and open an issue with the contents of `devices.txt`.
 
 For Corsair, BatteryBar does not switch the device into "software mode", so lighting and iCUE aren't affected. A device whose firmware only reports the battery level in that mode won't be shown.
 
-Other brands (Zowie, ASUS ROG, Lamzu, …) each use their own proprietary protocol and aren't supported.
+Other brands (Zowie, ASUS ROG, Lamzu, …) and some headsets (Logitech G PRO X 2, Razer BlackShark V2 Pro / Barracuda, Audeze Maxwell, HyperX Cloud III Wireless) aren't supported yet.
 
 ## Requirements
 
@@ -70,7 +81,8 @@ The output is `publish\BatteryBar.exe`.
 
 - Settings are stored in `%APPDATA%\BatteryBar\settings.json`.
 - **Start with Windows** adds an entry under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`.
-- When Razer Synapse is running, it talks to the device at the same time, so a query can occasionally fail. In that case the last known level is shown for up to 2 hours, which also covers a mouse that has gone to sleep.
+- When Razer Synapse is running, it talks to the device at the same time, so a query can occasionally fail. In that case the last known level is shown, and the device doesn't flicker on the taskbar. A real "device asleep" answer is told apart from such interference.
+- If every device is asleep, the widget hides completely and the menu isn't available until one of them wakes up.
 - Vendor software (G HUB, SteelSeries GG, iCUE, NGENUITY) can stay running. BatteryBar only sends read-only battery queries.
 
 ## License
