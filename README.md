@@ -2,7 +2,9 @@
 
 A tiny Windows app that shows the battery level of your wireless devices right on the taskbar, next to the notification area.
 
-![BatteryBar on the taskbar](docs/screenshot.png)
+![BatteryBar on the taskbar: headphones 30%, mouse 93%](docs/screenshot.png)
+
+*Example on Windows 11: wireless headphones at 30% and a mouse at 93%, next to the system tray.*
 
 ## Features
 
