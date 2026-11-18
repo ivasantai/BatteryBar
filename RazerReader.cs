@@ -14,7 +14,8 @@ internal static class RazerReader
     private const string RazerVid = "vid_1532";
     private const int ReportLen = 91; // report id + 90 байт
     private static readonly Guid HidInterfaceGuid = new("4D1E55B2-F16F-11CF-88CB-001111000030");
-    private static readonly byte[] TransactionIds = { 0x1F, 0x3F, 0xFF };
+    // Разные модели Razer ожидают разный transaction id — перебираем известные.
+    private static readonly byte[] TransactionIds = { 0x1F, 0x3F, 0x9F, 0xFF };
     private static readonly Dictionary<string, byte> TxCache = new();
     private static readonly object Sync = new();
     private static readonly Dictionary<string, (int Level, DateTime At)> LastKnown = new();

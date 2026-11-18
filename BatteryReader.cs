@@ -51,10 +51,30 @@ internal static class BatteryReader
         var nodes = await nodesTask;
         var list = Merge(nodes, aep);
 
-        try { list.AddRange(await Task.Run(RazerReader.Read)); }
-        catch { /* не критично */ }
+        list.AddRange(await Task.Run(() => ReadDongles()));
 
         return list.OrderBy(d => d.Kind).ThenBy(d => d.Name, StringComparer.CurrentCultureIgnoreCase).ToList();
+    }
+
+    /// <summary>Устройства с собственными донглами (каждый производитель — свой протокол).</summary>
+    private static readonly (string Name, Func<StringBuilder?, List<BatteryDevice>> Read)[] DongleReaders =
+    {
+        ("Razer", RazerReader.Read),
+        ("Logitech", LogitechReader.Read),
+        ("SteelSeries", SteelSeriesReader.Read),
+        ("Corsair", CorsairReader.Read),
+    };
+
+    private static List<BatteryDevice> ReadDongles(StringBuilder? log = null)
+    {
+        var list = new List<BatteryDevice>();
+        foreach (var (name, read) in DongleReaders)
+        {
+            log?.AppendLine().AppendLine($"=== {name} ===");
+            try { list.AddRange(read(log)); }
+            catch (Exception ex) { log?.AppendLine("Ошибка: " + ex.Message); }
+        }
+        return list;
     }
 
     private static List<BatteryDevice> Merge(List<PnpNode> nodes, Dictionary<Guid, AepInfo>? aep)
@@ -254,13 +274,10 @@ internal static class BatteryReader
         }
         catch (Exception ex) { sb.AppendLine("Ошибка: " + ex.Message); }
 
-        sb.AppendLine().AppendLine("=== Razer (HID) ===");
-        List<BatteryDevice> razer;
-        try { razer = RazerReader.Read(sb); }
-        catch (Exception ex) { sb.AppendLine("Ошибка: " + ex.Message); razer = new(); }
+        var dongles = ReadDongles(sb);
 
         sb.AppendLine().AppendLine("=== Итог (что покажет панель) ===");
-        foreach (var d in Merge(nodes, aep).Concat(razer))
+        foreach (var d in Merge(nodes, aep).Concat(dongles))
             sb.AppendLine($"{d.Kind,-10} {d.Level,3}%  {d.Name}");
         return sb.ToString();
     }
