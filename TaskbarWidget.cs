@@ -190,65 +190,63 @@ internal sealed class TaskbarWidget : Form
         Color fg = light ? Color.FromArgb(255, 0, 0, 0) : Color.FromArgb(255, 255, 255, 255);
         Color low = light ? Color.FromArgb(255, 196, 43, 28) : Color.FromArgb(255, 255, 153, 164);
 
-        using var iconFont = new Font(IconFontName, 16f * scale, GraphicsUnit.Pixel);
-        using var textFont = new Font(TextFontName, 14f * scale, GraphicsUnit.Pixel);
-        var fmt = StringFormat.GenericTypographic;
-
+        // Целые пиксельные размеры — глифы Segoe Fluent Icons рассчитаны на сетку 16 px.
+        int iconPx = (int)Math.Round(16 * scale);
+        int textPx = (int)Math.Round(14 * scale);
         int pad = (int)Math.Round(8 * scale);
-        int iconGap = (int)Math.Round(5 * scale);
+        int iconGap = (int)Math.Round(6 * scale);
         int itemGap = (int)Math.Round(16 * scale);
 
-        // Замеры
-        var items = new List<(string Icon, string Text, float IconW, float TextW, Color Color)>();
-        using (var tmp = new Bitmap(1, 1))
-        using (var mg = Graphics.FromImage(tmp))
+        var items = _devices.Select(d => (
+            Icon: GlyphRenderer.Render(Glyph(d.Kind), IconFontName, iconPx),
+            Text: GlyphRenderer.Render(d.Level + "%", TextFontName, textPx),
+            Color: d.Level <= 15 ? low : fg)).ToList();
+
+        static int InkW(GlyphRun r) => r.InkRight - r.InkLeft + 1;
+        static int InkH(GlyphRun r) => r.InkBottom - r.InkTop + 1;
+
+        int contentW = items.Sum(i => InkW(i.Icon) + iconGap + InkW(i.Text)) + itemGap * (items.Count - 1);
+        int width = contentW + pad * 2;
+
+        // Фон: почти прозрачный (чтобы окно ловило мышь по всей площади) + подсветка при наведении.
+        byte[] pixels;
+        using (var bg = new Bitmap(width, height, PixelFormat.Format32bppPArgb))
         {
-            mg.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
-            foreach (var d in _devices)
+            using (var g = Graphics.FromImage(bg))
             {
-                string icon = Glyph(d.Kind);
-                string text = d.Level + "%";
-                float iw = mg.MeasureString(icon, iconFont, PointF.Empty, fmt).Width;
-                float tw = mg.MeasureString(text, textFont, PointF.Empty, fmt).Width;
-                items.Add((icon, text, iw, tw, d.Level <= 15 ? low : fg));
+                g.Clear(Color.FromArgb(1, 0, 0, 0));
+                if (_hover || _dragging)
+                {
+                    g.SmoothingMode = SmoothingMode.AntiAlias;
+                    int vm = (int)Math.Round(4 * scale);
+                    using var hoverBrush = new SolidBrush(Color.FromArgb(light ? 20 : 26, fg));
+                    using var path = RoundedRect(new RectangleF(0, vm, width, height - vm * 2), 5 * scale);
+                    g.FillPath(hoverBrush, path);
+                }
             }
+            var data = bg.LockBits(new Rectangle(0, 0, width, height), ImageLockMode.ReadOnly, PixelFormat.Format32bppPArgb);
+            pixels = new byte[width * height * 4];
+            for (int y = 0; y < height; y++)
+                System.Runtime.InteropServices.Marshal.Copy(data.Scan0 + y * data.Stride, pixels, y * width * 4, width * 4);
+            bg.UnlockBits(data);
         }
 
-        float contentW = items.Sum(i => i.IconW + iconGap + i.TextW) + itemGap * (items.Count - 1);
-        int width = (int)Math.Ceiling(contentW) + pad * 2;
-
-        using var bmp = new Bitmap(width, height, PixelFormat.Format32bppArgb);
-        using (var g = Graphics.FromImage(bmp))
+        // Глифы: по горизонтали встык по контуру, по вертикали — центр реального контура в центре панели.
+        int x = pad;
+        foreach (var it in items)
         {
-            // Почти прозрачный фон — чтобы окно ловило мышь по всей площади.
-            g.Clear(Color.FromArgb(1, 0, 0, 0));
-            g.SmoothingMode = SmoothingMode.AntiAlias;
-            g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
+            int iconTop = (height - InkH(it.Icon)) / 2 - it.Icon.InkTop;
+            GlyphRenderer.Composite(pixels, width, height, it.Icon, x - it.Icon.InkLeft, iconTop, it.Color);
+            x += InkW(it.Icon) + iconGap;
 
-            if (_hover || _dragging)
-            {
-                int vm = (int)Math.Round(4 * scale);
-                using var hoverBrush = new SolidBrush(Color.FromArgb(light ? 20 : 26, fg));
-                using var path = RoundedRect(new RectangleF(0, vm, width, height - vm * 2), 5 * scale);
-                g.FillPath(hoverBrush, path);
-            }
-
-            float x = pad;
-            var center = new StringFormat(fmt) { LineAlignment = StringAlignment.Center, Alignment = StringAlignment.Near };
-            foreach (var it in items)
-            {
-                using var brush = new SolidBrush(it.Color);
-                g.DrawString(it.Icon, iconFont, brush, new RectangleF(x, 0, it.IconW + 2, height), center);
-                x += it.IconW + iconGap;
-                // текст чуть приподнят, чтобы визуально совпадал по центру с иконкой
-                g.DrawString(it.Text, textFont, brush, new RectangleF(x, -1 * scale, it.TextW + 2, height), center);
-                x += it.TextW + itemGap;
-            }
+            int textTop = (height - InkH(it.Text)) / 2 - it.Text.InkTop;
+            GlyphRenderer.Composite(pixels, width, height, it.Text, x - it.Text.InkLeft, textTop, it.Color);
+            x += InkW(it.Text) + itemGap;
         }
 
         _size = new Size(width, height);
         _location = ComputeLocation(width, height);
-        ApplyBitmap(bmp, _location);
+        ApplyPixels(pixels, width, height, _location);
         UpdateTooltip();
         UpdatePlacement();
     }
@@ -263,15 +261,15 @@ internal sealed class TaskbarWidget : Form
         _ => "", // Bluetooth
     };
 
-    private void ApplyBitmap(Bitmap bmp, Point location)
+    private void ApplyPixels(byte[] pixels, int width, int height, Point location)
     {
         IntPtr screenDc = Native.GetDC(IntPtr.Zero);
         IntPtr memDc = Native.CreateCompatibleDC(screenDc);
-        IntPtr hBitmap = bmp.GetHbitmap(Color.FromArgb(0));
+        IntPtr hBitmap = GlyphRenderer.CreateDib(pixels, width, height);
         IntPtr old = Native.SelectObject(memDc, hBitmap);
         try
         {
-            var size = new Native.SIZE(bmp.Width, bmp.Height);
+            var size = new Native.SIZE(width, height);
             var src = new Native.POINT(0, 0);
             var dst = new Native.POINT(location.X, location.Y);
             var blend = new Native.BLENDFUNCTION
