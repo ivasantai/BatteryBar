@@ -1,19 +1,26 @@
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
-using System.Drawing.Text;
 using Windows.Devices.Bluetooth;
 using Windows.Devices.Enumeration;
 
 namespace BatteryBar;
 
 /// <summary>
-/// Прозрачное окно поверх панели задач слева от области уведомлений:
-/// «[иконка] 30%  [иконка] 93%».
+/// Виджет на панели задач слева от области уведомлений: «[иконка] 30%  [иконка] 93%».
+///
+/// Окно встроено в саму панель задач (дочернее окно Shell_TrayWnd). Отдельное окно «поверх всех» не может
+/// быть выше панели, пока открыты «Пуск» или поиск: Windows переносит её в системный слой. Дочернее окно
+/// поднимается вместе с панелью. Если встроиться нельзя — запасной режим: обычное окно поверх всех.
+///
+/// Окно — NativeWindow, а не Form: WinForms у формы сам меняет стиль и родителя окна и «вынимал» её из панели.
 /// </summary>
-internal sealed class TaskbarWidget : Form
+internal sealed class TaskbarWidget : IDisposable
 {
-    private const int PollIntervalMs = 15_000;   // опрос заряда (и обнаружение уснувших/проснувшихся мышей)
+    private const int PollIntervalMs = 15_000;     // опрос заряда (и обнаружение уснувших/проснувшихся мышей)
     private const int PlacementIntervalMs = 1_000; // слежение за панелью задач
+
+    /// <summary>Пользователь выбрал «Выход» (или приложение перезапускается после обновления).</summary>
+    public event EventHandler? Closed;
 
     private readonly Settings _settings = Settings.Load();
     private readonly System.Windows.Forms.Timer _pollTimer = new() { Interval = PollIntervalMs };
@@ -22,22 +29,30 @@ internal sealed class TaskbarWidget : Form
     private readonly TipWindow _tip = new();
     private readonly System.Windows.Forms.Timer _tipTimer = new() { Interval = 500 };
     private readonly System.Windows.Forms.Timer _hoverTimer = new() { Interval = 100 };
+    private readonly System.Windows.Forms.Timer _raiseTimer = new() { Interval = 300 };
     // Первая проверка обновлений через 20 с после запуска, затем каждые 6 часов.
     private readonly System.Windows.Forms.Timer _updateTimer = new() { Interval = 20_000 };
-    private bool _updating;
-    private Version? _notifiedVersion;
-    private bool _tipVisible;
     private readonly ContextMenuStrip _menu = new();
     private readonly List<DeviceWatcher> _watchers = new();
     private readonly TrayIcon _tray;
+    private readonly BroadcastListener _listener = new();
+    private readonly WidgetWindow _win;
+    private readonly SynchronizationContext? _ui;
+
+    private bool _updating;
+    private Version? _notifiedVersion;
+    private bool _tipVisible;
 
     private List<BatteryDevice> _devices = new();
 
     /// <summary>Что показывать на панели: уснувшие устройства скрываются, если включена настройка.</summary>
     private List<BatteryDevice> VisibleDevices => _settings.HideInactive ? _devices.Where(d => !d.Asleep).ToList() : _devices;
+
     private bool _refreshing;
     private bool _hover;
     private bool _shown;
+    private bool _closing;
+    private bool _disposed;
     private Size _size = Size.Empty;
     private Point _location;
 
@@ -45,32 +60,34 @@ internal sealed class TaskbarWidget : Form
     private bool _dragMoved;
     private int _dragStartCursorX, _dragStartLeft;
 
+    private IntPtr _taskbar;   // панель задач, в которую встроено окно (IntPtr.Zero — запасной режим)
+    private int _lastDpi;
+    private DateTime _lastReattach = DateTime.MinValue;
+
     private IntPtr _winEventHook;
     private readonly Native.WinEventDelegate _winEventProc; // держим ссылку, чтобы GC не собрал делегат
 
     private static readonly string IconFontName = FirstInstalled("Segoe Fluent Icons", "Segoe MDL2 Assets");
     private static readonly string TextFontName = FirstInstalled("Segoe UI Variable Text", "Segoe UI");
 
+    private IntPtr Handle => _win.Handle;
+    private bool IsHandleCreated => _win.Handle != IntPtr.Zero;
+
     public TaskbarWidget()
     {
-        FormBorderStyle = FormBorderStyle.None;
-        ShowInTaskbar = false;
-        StartPosition = FormStartPosition.Manual;
-        AutoScaleMode = AutoScaleMode.None;
-        TopMost = true;
-        Text = "BatteryBar";
-        Size = new Size(1, 1);
-        Location = new Point(-32000, -32000);
+        _ui = SynchronizationContext.Current ?? new WindowsFormsSynchronizationContext();
+        _win = new WidgetWindow(this);
 
+        // Колбэк WinEvent (WINEVENT_OUTOFCONTEXT) приходит в потоке интерфейса — вызываем напрямую.
         _winEventProc = (_, _, _, _, _, _, _) =>
         {
-            BeginInvoke(() => { UpdatePlacement(); BringToTop(); });
+            UpdatePlacement();
+            BringToTop();
             // Панель задач поднимает себя уже после смены активного окна — повторяем чуть позже.
-            Task.Delay(300).ContinueWith(_ =>
-            {
-                if (IsHandleCreated && !IsDisposed) BeginInvoke(BringToTop);
-            });
+            _raiseTimer.Stop();
+            _raiseTimer.Start();
         };
+        _raiseTimer.Tick += (_, _) => { _raiseTimer.Stop(); BringToTop(); };
 
         _pollTimer.Tick += (_, _) => RefreshDevices();
         _placementTimer.Tick += (_, _) => { UpdatePlacement(); BringToTop(); };
@@ -85,26 +102,17 @@ internal sealed class TaskbarWidget : Form
 
         BuildMenu();
         _tray = new TrayIcon(_menu, RefreshDevices);
-        MouseDown += OnMouseDown;
-        MouseMove += OnMouseMove;
-        MouseUp += OnMouseUp;
+
+        // Широковещательные сообщения получает скрытое окно верхнего уровня (дочерние окна их не получают).
+        _listener.DevicesChanged += ScheduleRefresh;
+        _listener.SettingsChanged += Render;
+        // Проводник перезапущен: старая панель задач (и наше окно внутри неё) уничтожены — встраиваемся заново.
+        _listener.TaskbarRecreated += Reattach;
     }
 
-    protected override CreateParams CreateParams
+    public void Start()
     {
-        get
-        {
-            var cp = base.CreateParams;
-            cp.ExStyle |= Native.WS_EX_LAYERED | Native.WS_EX_TOOLWINDOW | Native.WS_EX_TOPMOST | Native.WS_EX_NOACTIVATE;
-            return cp;
-        }
-    }
-
-    protected override bool ShowWithoutActivation => true;
-
-    protected override void OnLoad(EventArgs e)
-    {
-        base.OnLoad(e);
+        CreateWindow();
         _winEventHook = Native.SetWinEventHook(Native.EVENT_SYSTEM_FOREGROUND, Native.EVENT_SYSTEM_FOREGROUND,
             IntPtr.Zero, _winEventProc, 0, 0, Native.WINEVENT_OUTOFCONTEXT);
         StartWatchers();
@@ -113,6 +121,7 @@ internal sealed class TaskbarWidget : Form
         _hoverTimer.Start();
         _updateTimer.Start();
         _tray.Update(_devices, VisibleDevices, DeviceLine); // значок появляется сразу, до первого опроса
+
         if (_settings.IsFirstRun && !BatteryReader.Demo)
         {
             // Первый запуск: по умолчанию включаем автозапуск. Дальше выбор пользователя в меню не трогаем.
@@ -136,32 +145,154 @@ internal sealed class TaskbarWidget : Form
         RefreshDevices();
     }
 
-    protected override void OnFormClosed(FormClosedEventArgs e)
+    private void Close()
     {
+        if (_closing) return;
+        _closing = true;
+        Dispose();
+        Closed?.Invoke(this, EventArgs.Empty);
+    }
+
+    public void Dispose()
+    {
+        if (_disposed) return;
+        _disposed = true;
+        _closing = true;
+        foreach (var t in new[] { _pollTimer, _placementTimer, _debounceTimer, _tipTimer, _hoverTimer, _raiseTimer, _updateTimer })
+            t.Dispose();
         _tray.Dispose();
         _tip.Dispose();
+        _listener.Dispose();
         if (_winEventHook != IntPtr.Zero) Native.UnhookWinEvent(_winEventHook);
         foreach (var w in _watchers)
         {
             try { w.Stop(); } catch { }
         }
-        base.OnFormClosed(e);
+        if (IsHandleCreated) _win.DestroyHandle();
     }
 
-    protected override void WndProc(ref Message m)
+    // ---------------- Окно ----------------
+
+    private void CreateWindow()
+    {
+        var cp = new CreateParams
+        {
+            Caption = "BatteryBar",
+            X = 0, Y = 0, Width = 1, Height = 1,
+            ExStyle = Native.WS_EX_LAYERED | Native.WS_EX_TOOLWINDOW | Native.WS_EX_NOACTIVATE,
+        };
+        IntPtr tb = Native.FindWindow("Shell_TrayWnd", null);
+        if (tb != IntPtr.Zero)
+        {
+            cp.Parent = tb;
+            cp.Style = Native.WS_CHILD | Native.WS_CLIPSIBLINGS;
+        }
+        else
+        {
+            cp.Style = Native.WS_POPUP;
+            cp.ExStyle |= Native.WS_EX_TOPMOST;
+        }
+
+        _shown = false;
+        _win.CreateHandle(cp);
+        _taskbar = tb != IntPtr.Zero && Native.GetParent(Handle) == tb ? tb : IntPtr.Zero;
+    }
+
+    /// <summary>Встраивается в (новую) панель задач заново.</summary>
+    private void Reattach()
+    {
+        if (_closing) return;
+        IntPtr tb = Native.FindWindow("Shell_TrayWnd", null);
+        if (tb == IntPtr.Zero) return; // панель ещё не создана — попробуем на следующем тике
+        if (IsHandleCreated && _taskbar == tb && Native.GetParent(Handle) == tb) return;
+        // Не чаще раза в 5 с: если встроиться не выходит, не уходим в цикл пересоздания окна.
+        if (DateTime.UtcNow - _lastReattach < TimeSpan.FromSeconds(5)) return;
+        _lastReattach = DateTime.UtcNow;
+        try
+        {
+            if (IsHandleCreated) _win.DestroyHandle();
+            CreateWindow();
+            Render();
+        }
+        catch { /* повторим на следующем тике */ }
+    }
+
+    /// <summary>Окно уничтожено извне (Проводник перезапущен) — встроимся заново при следующей проверке.</summary>
+    private void OnWindowLost()
+    {
+        _shown = false;
+        HideTip();
+    }
+
+    /// <summary>DPI берём у панели задач: у встроенного окна свой DPI не всегда актуален.</summary>
+    private float Scale()
+    {
+        IntPtr src = _taskbar != IntPtr.Zero && Native.IsWindow(_taskbar) ? _taskbar : Handle;
+        uint dpi = src != IntPtr.Zero ? Native.GetDpiForWindow(src) : 96;
+        return dpi > 0 ? dpi / 96f : 1f;
+    }
+
+    /// <summary>Перемещает окно в точку экрана (для встроенного — в координаты панели задач).</summary>
+    private void MoveWindowTo(Point screen)
+    {
+        if (!IsHandleCreated) return;
+        if (_taskbar != IntPtr.Zero)
+        {
+            var p = new Native.POINT(screen.X, screen.Y);
+            Native.ScreenToClient(_taskbar, ref p);
+            Native.SetWindowPos(Handle, Native.HWND_TOP, p.X, p.Y, 0, 0, Native.SWP_NOSIZE | Native.SWP_NOACTIVATE);
+        }
+        else
+        {
+            Native.SetWindowPos(Handle, Native.HWND_TOPMOST, screen.X, screen.Y, 0, 0, Native.SWP_NOSIZE | Native.SWP_NOACTIVATE);
+        }
+    }
+
+    /// <summary>Сообщения окна виджета. true — обработано.</summary>
+    private bool HandleMessage(ref Message m)
     {
         switch (m.Msg)
         {
-            case Native.WM_DEVICECHANGE:
-                ScheduleRefresh();
-                break;
-            case Native.WM_SETTINGCHANGE:
-            case Native.WM_DPICHANGED:
-                base.WndProc(ref m);
-                BeginInvoke(Render);
-                return;
+            case Native.WM_MOUSEACTIVATE:
+                m.Result = (IntPtr)Native.MA_NOACTIVATE; // щелчок не активирует ни виджет, ни панель задач
+                return true;
+            case Native.WM_LBUTTONDOWN:
+                OnLeftDown();
+                return true;
+            case Native.WM_MOUSEMOVE:
+                OnMouseMove();
+                return true;
+            case Native.WM_LBUTTONUP:
+                OnLeftUp();
+                return true;
+            case Native.WM_RBUTTONDOWN:
+                HideTip();
+                return true;
+            case Native.WM_RBUTTONUP:
+                ShowMenu();
+                return true;
+            case Native.WM_CAPTURECHANGED:
+                if (_dragging && m.LParam != Handle) FinishDrag();
+                return false;
         }
-        base.WndProc(ref m);
+        return false;
+    }
+
+    private sealed class WidgetWindow : NativeWindow
+    {
+        private readonly TaskbarWidget _owner;
+        public WidgetWindow(TaskbarWidget owner) => _owner = owner;
+
+        protected override void WndProc(ref Message m)
+        {
+            if (!_owner.HandleMessage(ref m)) base.WndProc(ref m);
+        }
+
+        protected override void OnHandleChange()
+        {
+            base.OnHandleChange();
+            if (Handle == IntPtr.Zero) _owner.OnWindowLost();
+        }
     }
 
     // ---------------- Данные ----------------
@@ -191,18 +322,19 @@ internal sealed class TaskbarWidget : Form
 
     private void ScheduleRefreshFromAnyThread()
     {
-        if (IsHandleCreated && !IsDisposed) BeginInvoke(ScheduleRefresh);
+        if (!_disposed) _ui?.Post(_ => ScheduleRefresh(), null);
     }
 
     private void ScheduleRefresh()
     {
+        if (_disposed) return;
         _debounceTimer.Stop();
         _debounceTimer.Start();
     }
 
     private async void RefreshDevices()
     {
-        if (_refreshing) return;
+        if (_refreshing || _disposed) return;
         _refreshing = true;
         try
         {
@@ -223,9 +355,10 @@ internal sealed class TaskbarWidget : Form
 
     private void Render()
     {
-        if (!IsHandleCreated || IsDisposed) return;
+        if (_disposed) return;
         var shown = VisibleDevices;
         _tray.Update(_devices, shown, DeviceLine);
+        if (!IsHandleCreated) return;
         if (shown.Count == 0 || !TryGetTaskbar(out var tb, out _))
         {
             HideWidget();
@@ -233,8 +366,8 @@ internal sealed class TaskbarWidget : Form
             return;
         }
 
-        float scale = Native.GetDpiForWindow(Handle) / 96f;
-        if (scale <= 0) scale = 1;
+        float scale = Scale();
+        _lastDpi = (int)(scale * 96);
         bool horizontal = tb.Width >= tb.Height;
         int height = horizontal ? tb.Height : (int)(40 * scale);
 
@@ -323,14 +456,23 @@ internal sealed class TaskbarWidget : Form
         {
             var size = new Native.SIZE(width, height);
             var src = new Native.POINT(0, 0);
-            var dst = new Native.POINT(location.X, location.Y);
             var blend = new Native.BLENDFUNCTION
             {
                 BlendOp = Native.AC_SRC_OVER,
                 SourceConstantAlpha = 255,
                 AlphaFormat = Native.AC_SRC_ALPHA,
             };
-            Native.UpdateLayeredWindow(Handle, screenDc, ref dst, ref size, memDc, ref src, 0, ref blend, Native.ULW_ALPHA);
+            if (_taskbar != IntPtr.Zero)
+            {
+                // Встроенное окно: картинку и размер задаём здесь, позицию — в координатах панели задач.
+                Native.UpdateLayeredWindowNoMove(Handle, screenDc, IntPtr.Zero, ref size, memDc, ref src, 0, ref blend, Native.ULW_ALPHA);
+                MoveWindowTo(location);
+            }
+            else
+            {
+                var dst = new Native.POINT(location.X, location.Y);
+                Native.UpdateLayeredWindow(Handle, screenDc, ref dst, ref size, memDc, ref src, 0, ref blend, Native.ULW_ALPHA);
+            }
         }
         finally
         {
@@ -353,8 +495,7 @@ internal sealed class TaskbarWidget : Form
         return p;
     }
 
-    // Подсказка управляется вручную: стандартная подсказка WinForms не всегда замечает уход курсора
-    // с неактивируемого layered-окна и оставалась висеть на экране.
+    // ---------------- Подсказка и наведение ----------------
 
     private string TooltipText() => _devices.Count == 0
         ? "Нет подключённых устройств с данными о заряде"
@@ -366,7 +507,6 @@ internal sealed class TaskbarWidget : Form
         if (_tipVisible) ShowTip();
     }
 
-    // Положение берём у системы: окно двигается через UpdateLayeredWindow/SetWindowPos, и Bounds формы может отставать.
     private bool CursorOverWidget()
     {
         if (!_shown || !IsHandleCreated || !Native.GetWindowRect(Handle, out var r)) return false;
@@ -387,16 +527,16 @@ internal sealed class TaskbarWidget : Form
     {
         _tipTimer.Stop();
         _tipVisible = false;
-        if (_tip.Visible) _tip.Hide();
+        if (!_tip.IsDisposed && _tip.Visible) _tip.Hide();
     }
 
     /// <summary>
     /// Наведение определяется опросом положения курсора (каждые 100 мс): сообщения о входе/уходе мыши
-    /// до неактивируемого layered-окна доходят ненадёжно.
+    /// до такого окна доходят ненадёжно.
     /// </summary>
     private void CheckHover()
     {
-        if (_dragging) return;
+        if (_dragging || _disposed) return;
         bool over = CursorOverWidget();
         if (over)
         {
@@ -428,7 +568,7 @@ internal sealed class TaskbarWidget : Form
     private Point ComputeLocation(int width, int height)
     {
         if (!TryGetTaskbar(out var tb, out var tray)) return _location;
-        float scale = Native.GetDpiForWindow(Handle) / 96f;
+        float scale = Scale();
 
         if (tb.Width < tb.Height)
         {
@@ -452,18 +592,31 @@ internal sealed class TaskbarWidget : Form
 
     private void UpdatePlacement()
     {
-        if (!IsHandleCreated || IsDisposed || _dragging) return;
+        if (_disposed || _closing || _dragging) return;
+
+        // Окно уничтожено (перезапуск Проводника) или панель задач сменилась — встраиваемся заново.
+        IntPtr tbNow = Native.FindWindow("Shell_TrayWnd", null);
+        if (!IsHandleCreated || (tbNow != IntPtr.Zero && _taskbar != tbNow))
+        {
+            Reattach();
+            if (!IsHandleCreated) return;
+        }
+
         if (VisibleDevices.Count == 0 || _size.IsEmpty || !ShouldBeVisible())
         {
             HideWidget();
             return;
         }
 
+        // Сменился масштаб экрана — перерисовываем под новый DPI.
+        if ((int)(Scale() * 96) != _lastDpi) { Render(); return; }
+
         var loc = ComputeLocation(_size.Width, _size.Height);
-        if (loc != _location || Location != loc)
+        bool moved = !Native.GetWindowRect(Handle, out var cur) || cur.Left != loc.X || cur.Top != loc.Y;
+        if (loc != _location || moved)
         {
             _location = loc;
-            Native.SetWindowPos(Handle, Native.HWND_TOPMOST, loc.X, loc.Y, 0, 0, Native.SWP_NOSIZE | Native.SWP_NOACTIVATE);
+            MoveWindowTo(loc);
         }
         ShowWidget();
     }
@@ -506,16 +659,17 @@ internal sealed class TaskbarWidget : Form
 
     private void BringToTop()
     {
-        if (_shown && !_dragging && !_menu.Visible)
-            Native.SetWindowPos(Handle, Native.HWND_TOPMOST, 0, 0, 0, 0,
-                Native.SWP_NOMOVE | Native.SWP_NOSIZE | Native.SWP_NOACTIVATE);
+        if (!_shown || _dragging || _menu.Visible || !IsHandleCreated) return;
+        // Встроенное окно — наверх среди дочерних окон панели задач; запасной режим — поверх всех окон.
+        Native.SetWindowPos(Handle, _taskbar != IntPtr.Zero ? Native.HWND_TOP : Native.HWND_TOPMOST, 0, 0, 0, 0,
+            Native.SWP_NOMOVE | Native.SWP_NOSIZE | Native.SWP_NOACTIVATE);
     }
 
     private void ShowWidget()
     {
-        if (_shown) return;
+        if (_shown || !IsHandleCreated) return;
         _shown = true;
-        Show();
+        Native.ShowWindow(Handle, Native.SW_SHOWNOACTIVATE);
         BringToTop();
     }
 
@@ -524,23 +678,22 @@ internal sealed class TaskbarWidget : Form
         HideTip();
         if (!_shown) return;
         _shown = false;
-        Hide();
+        if (IsHandleCreated) Native.ShowWindow(Handle, Native.SW_HIDE);
     }
 
     // ---------------- Мышь: перетаскивание и меню ----------------
 
-    private void OnMouseDown(object? sender, MouseEventArgs e)
+    private void OnLeftDown()
     {
         HideTip();
-        if (e.Button != MouseButtons.Left) return;
         _dragging = true;
         _dragMoved = false;
         _dragStartCursorX = Cursor.Position.X;
         _dragStartLeft = _location.X;
-        Capture = true;
+        Native.SetCapture(Handle);
     }
 
-    private void OnMouseMove(object? sender, MouseEventArgs e)
+    private void OnMouseMove()
     {
         if (!_dragging) return; // наведение отслеживает CheckHover
         int dx = Cursor.Position.X - _dragStartCursorX;
@@ -550,19 +703,19 @@ internal sealed class TaskbarWidget : Form
 
         int x = Math.Clamp(_dragStartLeft + dx, tb.Left, tb.Right - _size.Width);
         _location = new Point(x, _location.Y);
-        Native.SetWindowPos(Handle, Native.HWND_TOPMOST, x, _location.Y, 0, 0, Native.SWP_NOSIZE | Native.SWP_NOACTIVATE);
+        MoveWindowTo(_location);
     }
 
-    private void OnMouseUp(object? sender, MouseEventArgs e)
+    private void OnLeftUp()
     {
-        if (e.Button == MouseButtons.Right)
-        {
-            ShowMenu();
-            return;
-        }
         if (!_dragging) return;
+        Native.ReleaseCapture(); // FinishDrag вызовется из WM_CAPTURECHANGED
+        if (_dragging) FinishDrag();
+    }
+
+    private void FinishDrag()
+    {
         _dragging = false;
-        Capture = false;
         if (_dragMoved && TryGetTaskbar(out var tb, out _))
         {
             _settings.RightOffset = tb.Right - (_location.X + _size.Width);
@@ -576,7 +729,16 @@ internal sealed class TaskbarWidget : Form
         _menu.ShowImageMargin = false;
         _menu.ShowCheckMargin = true;
         // После закрытия меню (щелчок по панели задач поднимает её над виджетом) — сразу возвращаем виджет наверх.
-        _menu.Closed += (_, _) => BeginInvoke(() => { BringToTop(); CheckHover(); });
+        _menu.Closed += (_, _) =>
+        {
+            RemoveMenuMouseHook();
+            _ui?.Post(_ => { BringToTop(); CheckHover(); }, null);
+        };
+        _menu.Opened += (_, _) =>
+        {
+            EnsureMenuOwned(); // и при открытии из значка в трее
+            InstallMenuMouseHook();
+        };
 
         _menu.Opening += (_, e) =>
         {
@@ -636,6 +798,66 @@ internal sealed class TaskbarWidget : Form
         };
     }
 
+    private void ShowMenu()
+    {
+        EnsureMenuOwned();
+        _menu.Show(Cursor.Position, ToolStripDropDownDirection.AboveLeft);
+        EnsureMenuOwned(); // WinForms при показе может сбросить владельца
+        // Виджет никогда не активируется, поэтому без этого меню не узнаёт о щелчке в другом месте
+        // и не закрывается. Делаем меню активным окном — тогда любой щелчок вне его закрывает меню.
+        Native.SetForegroundWindow(_menu.Handle);
+    }
+
+    // Виджет встроен в панель задач и делит с Проводником состояние ввода, поэтому щелчок по панели
+    // не считается переходом в другое приложение и меню само не закрывается. Пока меню открыто,
+    // следим за нажатиями кнопок мыши: нажатие вне меню закрывает его.
+    private IntPtr _mouseHook;
+    private Native.LowLevelMouseProc? _mouseHookProc; // держим ссылку, чтобы GC не собрал делегат
+
+    private void InstallMenuMouseHook()
+    {
+        if (_mouseHook != IntPtr.Zero) return;
+        _mouseHookProc ??= MenuMouseHook;
+        _mouseHook = Native.SetWindowsHookEx(Native.WH_MOUSE_LL, _mouseHookProc, Native.GetModuleHandle(null), 0);
+    }
+
+    private void RemoveMenuMouseHook()
+    {
+        if (_mouseHook == IntPtr.Zero) return;
+        Native.UnhookWindowsHookEx(_mouseHook);
+        _mouseHook = IntPtr.Zero;
+    }
+
+    private IntPtr MenuMouseHook(int code, IntPtr wParam, IntPtr lParam)
+    {
+        if (code >= 0)
+        {
+            int msg = wParam.ToInt32();
+            if (msg is Native.WM_LBUTTONDOWN or Native.WM_RBUTTONDOWN or Native.WM_MBUTTONDOWN or Native.WM_XBUTTONDOWN)
+            {
+                var info = System.Runtime.InteropServices.Marshal.PtrToStructure<Native.MSLLHOOKSTRUCT>(lParam);
+                var pt = new Point(info.pt.X, info.pt.Y);
+                if (_menu.Visible && !_menu.Bounds.Contains(pt))
+                    _ui?.Post(_ => { if (_menu.Visible) _menu.Close(ToolStripDropDownCloseReason.AppClicked); }, null);
+            }
+        }
+        return Native.CallNextHookEx(_mouseHook, code, wParam, lParam);
+    }
+
+    /// <summary>
+    /// У меню без владельца, ставшего активным окном, Windows показывала кнопку на панели задач, будто
+    /// открылось приложение. Окно-инструмент со скрытым владельцем кнопку не получает.
+    /// </summary>
+    private void EnsureMenuOwned()
+    {
+        IntPtr h = _menu.Handle; // создаёт окно меню, если его ещё нет
+        long ex = Native.GetWindowLongPtr(h, Native.GWL_EXSTYLE).ToInt64();
+        if ((ex & Native.WS_EX_TOOLWINDOW) == 0)
+            Native.SetWindowLongPtr(h, Native.GWL_EXSTYLE, new IntPtr(ex | Native.WS_EX_TOOLWINDOW));
+        if (Native.GetWindow(h, Native.GW_OWNER) != _listener.Handle)
+            Native.SetWindowLongPtr(h, Native.GWLP_HWNDPARENT, _listener.Handle);
+    }
+
     // ---------------- Обновления ----------------
 
     private async Task CheckForUpdatesAsync(bool manual)
@@ -689,6 +911,8 @@ internal sealed class TaskbarWidget : Form
         }
     }
 
+    // ---------------- Утилиты ----------------
+
     private static string DeviceLine(BatteryDevice d) =>
         d.Asleep ? $"{d.Name} — {d.Level}% (спит)" : $"{d.Name} — {d.Level}%";
 
@@ -696,16 +920,6 @@ internal sealed class TaskbarWidget : Form
     {
         try { return Settings.AutostartEnabled; } catch { return false; }
     }
-
-    private void ShowMenu()
-    {
-        _menu.Show(Cursor.Position, ToolStripDropDownDirection.AboveLeft);
-        // Виджет никогда не активируется, поэтому без этого меню не узнаёт о щелчке в другом месте
-        // и не закрывается. Делаем меню активным окном — тогда любой щелчок вне его закрывает меню.
-        Native.SetForegroundWindow(_menu.Handle);
-    }
-
-    // ---------------- Утилиты ----------------
 
     private static string FirstInstalled(params string[] names)
     {

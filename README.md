@@ -8,6 +8,7 @@ A tiny Windows app that shows the battery level of your wireless devices right o
 
 - Shows each connected device as an icon plus a percentage (headphones, mouse, keyboard, gamepad, phone).
 - Sits on the taskbar to the left of the system tray. You can drag it to another spot, and the position is remembered.
+- Built into the taskbar itself (as a child window of `Shell_TrayWnd`), so it stays visible while Start or Search is open and hides together with an auto-hidden taskbar. If Explorer restarts, the widget re-attaches automatically.
 - Matches the light or dark taskbar theme. The level turns red at 15% and below.
 - Hover to see device names. Right-click for the menu: refresh, hide sleeping devices, start with Windows, reset position, exit.
 - **Tray icon** with the same menu, so it's always reachable, even when every device is asleep and the widget is hidden. The icon is a small battery filled to the lowest current level, and hovering it lists every device. On Windows 11, new tray icons go under the "^" overflow at first; drag the icon onto the taskbar to keep it visible.

@@ -56,6 +56,48 @@ internal static class Native
     public static extern bool UpdateLayeredWindow(IntPtr hwnd, IntPtr hdcDst, ref POINT pptDst, ref SIZE psize,
         IntPtr hdcSrc, ref POINT pptSrc, uint crKey, ref BLENDFUNCTION pblend, uint flags);
 
+    /// <summary>Вариант без позиции (pptDst = NULL) — для дочернего окна, которое двигаем через SetWindowPos.</summary>
+    [DllImport("user32.dll", SetLastError = true, EntryPoint = "UpdateLayeredWindow")]
+    public static extern bool UpdateLayeredWindowNoMove(IntPtr hwnd, IntPtr hdcDst, IntPtr pptDst, ref SIZE psize,
+        IntPtr hdcSrc, ref POINT pptSrc, uint crKey, ref BLENDFUNCTION pblend, uint flags);
+
+    public const int WS_CHILD = 0x40000000;
+    public const int WS_POPUP = unchecked((int)0x80000000);
+    public const int WS_CLIPSIBLINGS = 0x04000000;
+    public static readonly IntPtr HWND_TOP = IntPtr.Zero;
+
+    public const int WM_MOUSEACTIVATE = 0x0021, MA_NOACTIVATE = 3;
+    public const int WM_MOUSEMOVE = 0x0200, WM_LBUTTONDOWN = 0x0201, WM_LBUTTONUP = 0x0202;
+    public const int WM_RBUTTONDOWN = 0x0204, WM_RBUTTONUP = 0x0205, WM_CAPTURECHANGED = 0x0215;
+    public const int SW_HIDE = 0, SW_SHOWNOACTIVATE = 4;
+
+    [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hwnd, int cmd);
+    [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hwnd);
+
+    // Низкоуровневый перехват мыши — закрытие меню по щелчку вне его.
+    public const int WH_MOUSE_LL = 14;
+    public const int WM_MBUTTONDOWN = 0x0207, WM_XBUTTONDOWN = 0x020B;
+    public delegate IntPtr LowLevelMouseProc(int code, IntPtr wParam, IntPtr lParam);
+    [StructLayout(LayoutKind.Sequential)]
+    public struct MSLLHOOKSTRUCT { public POINT pt; public uint mouseData, flags, time; public IntPtr extra; }
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern IntPtr SetWindowsHookEx(int id, LowLevelMouseProc proc, IntPtr hMod, uint threadId);
+    [DllImport("user32.dll")] public static extern bool UnhookWindowsHookEx(IntPtr hook);
+    [DllImport("user32.dll")] public static extern IntPtr CallNextHookEx(IntPtr hook, int code, IntPtr wParam, IntPtr lParam);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr GetModuleHandle(string? name);
+
+    public const int GWL_EXSTYLE = -20, GWLP_HWNDPARENT = -8;
+    public const uint GW_OWNER = 4;
+    [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW")] public static extern IntPtr GetWindowLongPtr(IntPtr hwnd, int index);
+    [DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW")] public static extern IntPtr SetWindowLongPtr(IntPtr hwnd, int index, IntPtr value);
+    [DllImport("user32.dll")] public static extern IntPtr GetWindow(IntPtr hwnd, uint cmd);
+    [DllImport("user32.dll")] public static extern IntPtr SetCapture(IntPtr hwnd);
+    [DllImport("user32.dll")] public static extern bool ReleaseCapture();
+    [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr hwnd);
+    [DllImport("user32.dll")] public static extern IntPtr GetParent(IntPtr hwnd);
+    [DllImport("user32.dll")] public static extern IntPtr SetParent(IntPtr child, IntPtr parent);
+    [DllImport("user32.dll")] public static extern bool ScreenToClient(IntPtr hwnd, ref POINT pt);
+
     [DllImport("user32.dll")] public static extern IntPtr GetDC(IntPtr hwnd);
     [DllImport("user32.dll")] public static extern int ReleaseDC(IntPtr hwnd, IntPtr hdc);
     [DllImport("gdi32.dll")] public static extern IntPtr CreateCompatibleDC(IntPtr hdc);

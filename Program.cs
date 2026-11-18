@@ -34,6 +34,11 @@ internal static class Program
         Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
-        Application.Run(new TaskbarWidget());
+        // Виджет — не «главное» окно приложения: при перезапуске Проводника его окно уничтожается вместе
+        // с панелью задач, и программа не должна из-за этого завершаться. Выход — только по команде «Выход».
+        using var widget = new TaskbarWidget();
+        widget.Closed += (_, _) => Application.ExitThread();
+        widget.Start();
+        Application.Run();
     }
 }
