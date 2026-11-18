@@ -57,8 +57,8 @@ Other brands (Zowie, ASUS ROG, Lamzu, …) and some headsets (Logitech G PRO X 2
 ## Installation
 
 1. Download `BatteryBar.exe` from the [latest release](https://github.com/ivasantai/BatteryBar/releases/latest).
-2. Run it. Nothing needs installing, and the app has no window: it only shows up on the taskbar.
-3. Optional: right-click the widget and enable **Start with Windows**.
+2. Run it. Nothing needs installing, and the app has no window: it only shows up on the taskbar and in the tray.
+3. On the first run, BatteryBar turns on **Start with Windows** by itself and shows a notification. You can turn it off from the right-click menu, and it won't be turned back on.
 
 If no supported device is connected, the widget stays hidden.
 

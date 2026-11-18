@@ -18,12 +18,16 @@ internal sealed class Settings
     private static string FilePath =>
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "BatteryBar", "settings.json");
 
+    /// <summary>Файла настроек ещё не было — программа запущена впервые.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public bool IsFirstRun { get; private set; }
+
     public static Settings Load()
     {
         try
         {
-            if (File.Exists(FilePath))
-                return JsonSerializer.Deserialize<Settings>(File.ReadAllText(FilePath)) ?? new Settings();
+            if (!File.Exists(FilePath)) return new Settings { IsFirstRun = true };
+            return JsonSerializer.Deserialize<Settings>(File.ReadAllText(FilePath)) ?? new Settings();
         }
         catch { }
         return new Settings();

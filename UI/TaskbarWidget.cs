@@ -62,7 +62,15 @@ internal sealed class TaskbarWidget : Form
         Size = new Size(1, 1);
         Location = new Point(-32000, -32000);
 
-        _winEventProc = (_, _, _, _, _, _, _) => BeginInvoke(() => { UpdatePlacement(); BringToTop(); });
+        _winEventProc = (_, _, _, _, _, _, _) =>
+        {
+            BeginInvoke(() => { UpdatePlacement(); BringToTop(); });
+            // Панель задач поднимает себя уже после смены активного окна — повторяем чуть позже.
+            Task.Delay(300).ContinueWith(_ =>
+            {
+                if (IsHandleCreated && !IsDisposed) BeginInvoke(BringToTop);
+            });
+        };
 
         _pollTimer.Tick += (_, _) => RefreshDevices();
         _placementTimer.Tick += (_, _) => { UpdatePlacement(); BringToTop(); };
@@ -105,7 +113,22 @@ internal sealed class TaskbarWidget : Form
         _hoverTimer.Start();
         _updateTimer.Start();
         _tray.Update(_devices, VisibleDevices, DeviceLine); // значок появляется сразу, до первого опроса
-        if (Program.JustUpdated)
+        if (_settings.IsFirstRun && !BatteryReader.Demo)
+        {
+            // Первый запуск: по умолчанию включаем автозапуск. Дальше выбор пользователя в меню не трогаем.
+            bool enabled = false;
+            try
+            {
+                if (!Settings.AutostartEnabled) Settings.AutostartEnabled = true;
+                enabled = true;
+            }
+            catch { }
+            _settings.Save(); // файл настроек появился — больше это не повторится
+            if (enabled)
+                _tray.Notify("BatteryBar запущен",
+                    "Он будет запускаться вместе с Windows. Отключить можно в меню (правый клик по значку).");
+        }
+        else if (Program.JustUpdated)
         {
             Updater.Log("запущена после обновления");
             _tray.Notify("BatteryBar обновлён", $"Установлена версия {Updater.Current}.");
@@ -552,8 +575,14 @@ internal sealed class TaskbarWidget : Form
     {
         _menu.ShowImageMargin = false;
         _menu.ShowCheckMargin = true;
-        _menu.Opening += (_, _) =>
+        // После закрытия меню (щелчок по панели задач поднимает её над виджетом) — сразу возвращаем виджет наверх.
+        _menu.Closed += (_, _) => BeginInvoke(() => { BringToTop(); CheckHover(); });
+
+        _menu.Opening += (_, e) =>
         {
+            // WinForms заранее отменяет открытие пустого меню, а пункты мы добавляем здесь же —
+            // без этого первое нажатие правой кнопки меню не открывало.
+            e.Cancel = false;
             HideTip();
             _menu.Items.Clear();
             if (_devices.Count == 0)
@@ -671,6 +700,9 @@ internal sealed class TaskbarWidget : Form
     private void ShowMenu()
     {
         _menu.Show(Cursor.Position, ToolStripDropDownDirection.AboveLeft);
+        // Виджет никогда не активируется, поэтому без этого меню не узнаёт о щелчке в другом месте
+        // и не закрывается. Делаем меню активным окном — тогда любой щелчок вне его закрывает меню.
+        Native.SetForegroundWindow(_menu.Handle);
     }
 
     // ---------------- Утилиты ----------------
